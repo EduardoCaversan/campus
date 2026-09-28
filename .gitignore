@@ -9,3 +9,23 @@ playwright/.auth/
 
 artifacts/
 debug/
+reports/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+*.sqlite*
+*.db*
+*cookies*.json
+*storage-state*.json
+*.har
+*trace*.zip
+screenshots/
+campus.local.toml

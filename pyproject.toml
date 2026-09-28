@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "campus-agent"
+version = "0.1.0"
+description = "Local-first, evidence-backed academic CLI"
+requires-python = ">=3.12"
+dependencies = [
+  "typer>=0.16,<1", "rich>=14,<15", "httpx>=0.28,<1",
+  "beautifulsoup4>=4.13,<5", "pydantic>=2.11,<3",
+  "playwright>=1.51,<2", "reportlab>=4.3,<5", "python-docx>=1.1,<2",
+  "pypdf>=5.4,<7", "tzdata>=2025.1",
+  "python-dotenv>=1.1,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<10", "ruff>=0.11,<1", "build>=1.2,<2"]
+
+[project.scripts]
+campus = "campus.cli:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/campus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "B008"]
