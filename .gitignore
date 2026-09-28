@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+
+.campus/
+auth/
+credentials/
+playwright/.auth/
+
+artifacts/
+debug/
