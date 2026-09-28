@@ -8,7 +8,13 @@ from bs4 import BeautifulSoup
 
 from campus.models import CampusError, ProviderResult, State
 from campus.providers.browser import authenticated, browser
-from campus.providers.parsing import fact, moodle_assignment, moodle_courses, plain
+from campus.providers.parsing import (
+    fact,
+    moodle_assignment,
+    moodle_course_facts,
+    moodle_courses,
+    plain,
+)
 
 READ_METHODS = {
     "core_webservice_get_site_info",
@@ -89,12 +95,13 @@ class MoodleProvider:
                     cid = course["id"]
                     subject = f"moodle:course:{cid}"
                     ref = self.config.moodle_url + f"/course/view.php?id={cid}"
-                    for field, value in (
-                        ("name", course["fullname"]),
-                        ("shortname", course.get("shortname")),
-                    ):
-                        if value:
-                            facts.append(fact(subject, "course", field, value, self.name, ref))
+                    facts.extend(moodle_course_facts(cid, course["fullname"], ref))
+                    if course.get("shortname"):
+                        facts.append(
+                            fact(
+                                subject, "course", "shortname", course["shortname"], self.name, ref
+                            )
+                        )
                     try:
                         response = self.rpc(
                             client, "mod_assign_get_assignments", **{"courseids[0]": cid}
@@ -266,16 +273,7 @@ class MoodleProvider:
                         courses = data.get("courses", [])
                         for c in courses:
                             ref = self.config.moodle_url + f"/course/view.php?id={c['id']}"
-                            facts.append(
-                                fact(
-                                    f"moodle:course:{c['id']}",
-                                    "course",
-                                    "name",
-                                    c["fullname"],
-                                    self.name,
-                                    ref,
-                                )
-                            )
+                            facts.extend(moodle_course_facts(c["id"], c["fullname"], ref))
                             links.append((ref, f"moodle:course:{c['id']}"))
                         if (
                             not courses
@@ -290,14 +288,22 @@ class MoodleProvider:
                 if not links:
                     parsed = moodle_courses(page.content(), self.config.moodle_url)
                     facts.extend(parsed)
-                    links = [(f.external_ref, f.subject) for f in parsed]
+                    links = sorted({(f.external_ref, f.subject) for f in parsed})
                 if not links:
                     warnings.append(
                         "No enrolled courses could be verified; empty dashboard is not proof of no enrollment"
                     )
                 for ref, course in links[: self.config.max_items]:
                     page.goto(ref, wait_until="domcontentloaded")
-                    soup = BeautifulSoup(page.content(), "html.parser")
+                    html = page.content()
+                    from campus.providers.moodle_content import course_content
+
+                    content_facts, content_warnings = course_content(
+                        ctx, self.config, html, ref, course
+                    )
+                    facts.extend(content_facts)
+                    warnings.extend(content_warnings)
+                    soup = BeautifulSoup(html, "html.parser")
                     assignment_urls = sorted(
                         {
                             urljoin(ref, a["href"])
@@ -317,7 +323,7 @@ class MoodleProvider:
                         )
                         time.sleep(0.3)
                 warnings.append(
-                    "Browser extraction covers visible assignments only; recognized Portuguese deadlines use configured timezone. Other date formats remain UNKNOWN; feedback/forums/hidden sections may be incomplete"
+                    "Browser extraction covers visible assignments/resources, bounded teaching documents and announcement-index titles. Discussion bodies are not opened; feedback and hidden sections may be incomplete. Recognized Portuguese deadlines use configured timezone"
                 )
             return ProviderResult(
                 provider=self.name,

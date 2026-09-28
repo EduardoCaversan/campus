@@ -39,8 +39,24 @@ def moodle_courses(html: str, base: str) -> list[Fact]:
         name = link.get_text(" ", strip=True)
         if cid and cid not in seen and name:
             seen.add(cid)
-            result.append(fact(f"moodle:course:{cid}", "course", "name", name, "moodle", url, name))
+            result.extend(moodle_course_facts(cid, name, url))
     return result
+
+
+def moodle_course_facts(cid, name: str, url: str):
+    values = {"name": name, "display_name": name}
+    # Observed UTFPR offering label, not an inferred course-name similarity.
+    match = re.fullmatch(
+        r"([A-Z]{2}\d{2}[A-Z0-9]+)\s*-\s*(.+?)\s*-\s*([A-Z]+\d+)\s*\((20\d{2})[_/]0?([12])\)",
+        name.strip(),
+    )
+    if match:
+        code, title, section, year, period = match.groups()
+        values.update(code=code, name=title.strip(), section=section, semester=f"{year}/{period}")
+    return [
+        fact(f"moodle:course:{cid}", "course", field, value, "moodle", url, name)
+        for field, value in values.items()
+    ]
 
 
 def localized_date(text: str, timezone: str) -> str | None:
@@ -78,7 +94,11 @@ def moodle_assignment(html: str, url: str, course: str, timezone="America/Sao_Pa
             row.decompose()
     aid = parse_qs(urlsplit(url).query).get("id", [""])[0]
     subject = f"moodle:assignment:{aid}"
-    heading = soup.select_one("h2") or soup.select_one("h1")
+    # Modern Moodle puts the activity title in the page header. Global h2s
+    # include chat/navigation widgets and headings authored inside instructions.
+    heading = soup.select_one("#page-header .page-header-headings h1")
+    if heading is None:
+        heading = soup.select_one('#region-main > h2, #region-main [role="main"] > h2')
     result = [fact(subject, "assignment", "course", course, "moodle", url)]
     if heading:
         result.append(

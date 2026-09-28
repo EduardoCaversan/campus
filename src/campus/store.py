@@ -230,6 +230,11 @@ class Store:
                 )
         return result
 
+    def change_count(self) -> int:
+        return self.connection.execute(
+            "SELECT COUNT(*) FROM changes WHERE acknowledged=0"
+        ).fetchone()[0]
+
     def health(self, result: ProviderResult | None = None):
         if result:
             with self.transaction():

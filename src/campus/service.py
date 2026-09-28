@@ -78,6 +78,15 @@ class Campus:
                 results.append(result.model_dump(exclude={"facts"}))
             log_event(self.config, "provider_sync", provider=name, state=result.state.value)
         mappings = correlate(self.store)
+        from campus.mail_analysis import analyze_mail
+
+        mail_analysis = analyze_mail(self.store)
+        from campus.policies import analyze_policies
+
+        policy_analysis = analyze_policies(self.store)
+        from campus.events import analyze_events
+
+        event_analysis = analyze_events(self.store)
         state = (
             "COMPLETED" if all(r["state"] in ("HEALTHY", "CACHED") for r in results) else "PARTIAL"
         )
@@ -86,6 +95,9 @@ class Campus:
             "providers": results,
             "changes": changed,
             "course_matches": mappings,
+            "mail_analysis": mail_analysis,
+            "policy_analysis": policy_analysis,
+            "event_analysis": event_analysis,
         }
         data["report"] = write_report(self.config, self.store, "sync", data)
         return data
@@ -168,7 +180,7 @@ class Campus:
             "semester": semesters or "UNKNOWN",
             "courses": len(courses),
             "deadlines": self.deadlines(),
-            "changes": len(self.store.changes()),
+            "changes": self.store.change_count(),
             "attendance": attendance_view(self.store, self.config.stale_hours),
             "last_sync": self.store.health(),
         }
@@ -183,6 +195,8 @@ class Campus:
                 return {"state": "UNKNOWN", "missing": ["curriculum course code"]}
             courses.append(record)
         result = plan_known_curriculum(courses, max_load=max_load, start_term=start_term)
+        result["curriculum_requirements"] = self.store.entities("requirement")
+        result["recorded_equivalencies"] = self.store.entities("equivalence")
         result["evidence"] = [ev for e in self.store.entities("curriculum") for ev in e["evidence"]]
         result["freshness"] = freshness(result["evidence"], self.config.stale_hours)
         return result
@@ -206,6 +220,21 @@ class Campus:
                 "freshness": freshness(e["evidence"], self.config.stale_hours),
             }
             description = single(e, "description")
+            attachment_links = {
+                url for links in e["fields"].get("attachments", []) for url in links
+            }
+            documents = [
+                f
+                for f in self.store.facts(kind="document")
+                if f["field"] == "text" and f["external_ref"] in attachment_links
+            ]
+            details["attachment_instructions"] = len(documents)
+            details["document_evidence"] = [f["id"] for f in documents]
+            missing_attachments = attachment_links - {f["external_ref"] for f in documents}
+            if missing_attachments:
+                details["blockers"].append(
+                    f"{len(missing_attachments)} attachment(s) not available as extracted instructions; use campus download and review unsupported formats manually"
+                )
             if e["conflicts"]:
                 details["state"] = "CONFLICT"
                 details["blockers"].append(
@@ -217,8 +246,23 @@ class Campus:
                 f"# Assignment preparation\n\nState: PARTIAL — requires review\n\nAssignment: {single(e, 'name', e['id'])}\n\n## Source instructions (untrusted data)\n\n{description or 'UNKNOWN'}\n\n## Review checklist\n\n- Confirm deliverables and all deadlines against cited sources.\n- Review source project and run its trusted build/test instructions.\n- Validate content and required formats.\n- Submit manually; CAMPUS has not submitted anything.\n\n## Evidence\n\n"
                 + json.dumps(e["evidence"], indent=2)
             )
+            for document in documents:
+                text += (
+                    f"\n\n## Attachment instructions (untrusted data; evidence {document['id']})\n\n"
+                    + str(document["value"])
+                )
+            instruction_text = "\n".join([description or "", *[str(f["value"]) for f in documents]])
+            from campus.deliverables import extract_requirements, validate_requirements
+
+            requirements = extract_requirements(
+                instruction_text,
+                [ev["id"] for ev in e["evidence"] if ev["field"] == "description"]
+                + details["document_evidence"],
+            )
             try:
-                details["artifacts"].append(generate_document(text, directory / "preparation.md"))
+                details["artifacts"].append(
+                    {**generate_document(text, directory / "preparation.md"), "role": "preparation"}
+                )
                 details["completed"].append("Evidence-backed preparation checklist generated")
                 repository = single(e, "repository")
                 if repository:
@@ -241,17 +285,26 @@ class Campus:
                     details["blockers"].append(
                         "No explicitly linked repository; use campus link-repo"
                     )
-                if description and any(x in description.lower() for x in (".pkt", "packet tracer")):
-                    details["state"] = "BLOCKED"
+                if any(x in instruction_text.lower() for x in (".pkt", "packet tracer")):
+                    if details["state"] != "CONFLICT":
+                        details["state"] = "BLOCKED"
                     details["blockers"].append(
                         "Packet Tracer authoring requires unsupported interactive software"
                     )
+                details["deliverable_validation"] = validate_requirements(
+                    requirements, details["artifacts"]
+                )
                 artifact_manifest(
                     directory,
                     details["artifacts"],
                     assignment=e["id"],
                     course=single(e, "course"),
                     state=details["state"],
+                    repository=repository,
+                    commit_sha=details.get("commit"),
+                    evidence=details["evidence"],
+                    document_evidence=details["document_evidence"],
+                    deliverable_validation=details["deliverable_validation"],
                 )
             except CampusError as exc:
                 details["state"] = "PARTIAL" if details["artifacts"] else "FAILED"
@@ -272,11 +325,45 @@ class Campus:
 
         q = normalize(question)
         if any(t in q for t in ("miss", "absence", "attendance", "faltar", "faltas", "frequencia")):
+            from campus.engines import attendance_day_view
+
+            weekday = next(
+                (
+                    d
+                    for d in (
+                        "monday",
+                        "tuesday",
+                        "wednesday",
+                        "thursday",
+                        "friday",
+                        "saturday",
+                        "sunday",
+                        "segunda",
+                        "terca",
+                        "quarta",
+                        "quinta",
+                        "sexta",
+                        "sabado",
+                        "domingo",
+                    )
+                    if d in q.split()
+                ),
+                None,
+            )
+            if weekday:
+                return attendance_day_view(self.store, weekday, self.config.stale_hours)
             return {
                 "answer": "Attendance uses recorded units. The class length and schedule must be known to evaluate a particular Friday.",
                 "data": attendance_view(self.store, self.config.stale_hours),
             }
-        if any(t in q for t in ("grade", "nota", "media", "passar")):
+        if any(
+            t in q for t in ("grade", "nota", "media", "passar", "tirar", "aprovado", "quanto fico")
+        ):
+            from campus.policies import grade_question
+
+            answer = grade_question(self.store, question, self.config.stale_hours)
+            if answer:
+                return answer
             return {
                 "answer": "Deterministic calculations from stored grading rules",
                 "data": grade_view(self.store, self.config.stale_hours),

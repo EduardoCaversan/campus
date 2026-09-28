@@ -91,3 +91,11 @@ def test_correlate_requires_section_and_semester_for_auto_map(store):
 def test_freshness():
     old = (datetime.now(UTC) - timedelta(days=3)).isoformat()
     assert freshness([{"last_seen": old}])["state"] == "STALE"
+
+
+def test_change_count_is_not_limited_to_display_page(store):
+    store.ingest([item(str(i), subject=f"assignment:{i}") for i in range(120)])
+    assert len(store.changes()) == 100
+    assert store.change_count() == 120
+    store.changes(acknowledge=True, limit=10)
+    assert store.change_count() == 110

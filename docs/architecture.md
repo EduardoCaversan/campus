@@ -18,6 +18,10 @@ Portal / Moodle / Mail / Git / documents
 
 `models.py` defines validated observations and provider outcomes. `providers/` owns external transport and parsing. Domain engines have no Playwright selectors. `service.py` coordinates services; `cli.py` handles presentation. `artifacts.py` performs bounded local generation. `security.py` centralizes redaction, paths, package inspection and capability decisions.
 
+`rules.py` models grading, attendance and curriculum-rule values inside the existing evidence envelope. `policies.py` compiles a bounded linear arithmetic grammar to Decimal coefficients, matches only exact assessment identifiers/names, and evaluates scenarios without code execution. Policy source identity uses the stable Moodle resource view: revisions replace derived current pointers while preserving immutable document/evidence history. Independent documents remain independent sources and conflicts remain visible.
+
+`events.py` keeps announcement/email interpretations as candidate events, not authoritative deadline mutations. `deliverables.py` separates explicit requirements from mentions and file validation from academic-content approval. Portal workload columns are preserved separately; approved, validated, group-balance and overall-balance hours are not interchangeable.
+
 ## Persistence and evidence
 
 An assertion is identified by `(subject, field, source, external_ref)`. `evidence` holds immutable versions. `current` points to the latest source assertion and last successful observation. `snapshots` are content-addressed, sanitized excerpts or structured values, not raw authenticated pages. `changes` contains semantic value changes; refreshing an identical value advances observation time without notifying again. Older imports cannot overwrite newer observations.
@@ -32,6 +36,8 @@ SQLite uses transactions, foreign keys, WAL, a busy timeout and schema-version c
 - Prerequisite cycle detection, earlier-term completion, workload caps, term offerings and interval-overlap checks. Plans are feasible greedy estimates, not globally optimal plans.
 - Exact normalized names yield course suggestions. Automatic joins require matching code, semester and section. Explicit mappings persist and reject cycles.
 - Stable hashes/version comparisons for changes and semantic caching.
+- Regular-timetable absence scenarios preserve period units and unknown calendar exceptions. Curriculum planning separates known mandatory courses from unresolved gates and elective/non-course requirements.
+- Mail topic/date extraction and exact course-reference candidates retain source evidence IDs; inferred mentions do not become authoritative deadline facts.
 - ZIP entries and document metadata use stable timestamps for repeatable generation. Run manifests have their actual creation time.
 
 ## LLM boundary

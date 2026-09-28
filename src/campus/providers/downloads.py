@@ -100,6 +100,8 @@ def download_moodle(config, store, identifier: str):
                             "warning": "Untrusted document; no embedded code executed, archives not extracted",
                         }
                     )
+                except CampusError as exc:
+                    results.append({"state": exc.state.value, "reason": str(exc)})
                 except Exception as exc:
                     results.append(
                         {
@@ -108,6 +110,9 @@ def download_moodle(config, store, identifier: str):
                         }
                     )
     return {
-        "state": "COMPLETED" if all(r["state"] == "COMPLETED" for r in results) else "PARTIAL",
+        "state": "COMPLETED"
+        if len(links) <= config.max_items and all(r["state"] == "COMPLETED" for r in results)
+        else "PARTIAL",
+        "limited": len(links) > config.max_items,
         "attachments": results,
     }

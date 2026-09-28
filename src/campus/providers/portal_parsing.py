@@ -138,8 +138,25 @@ def bulletin(html: str, ref: str):
             }
             result.extend(emit(data, subject, "course", ref, " | ".join(values)))
             if minimum is not None:
+                from campus.rules import AttendancePolicy
+
                 result.extend(
-                    emit({"attendance_rule": allowance[0]}, subject, "course", ref, allowance[0])
+                    emit(
+                        {
+                            "attendance_rule": allowance[0],
+                            "attendance_policy": AttendancePolicy(
+                                unit="class_period",
+                                maximum_absence_fraction=float(allowance[1].replace(",", "."))
+                                / 100,
+                                minimum_attendance_fraction=minimum,
+                                expression=allowance[0],
+                            ).model_dump(),
+                        },
+                        subject,
+                        "course",
+                        ref,
+                        allowance[0],
+                    )
                 )
         # Assessment tables identify the course and section in their own title.
         title = table.get_text(" ", strip=True)
@@ -206,6 +223,54 @@ def enrollment(html: str, ref: str, term: str | None):
             result.extend(
                 emit(data, course_id(code, row.get("turma"), term), "course", ref, " | ".join(vals))
             )
+    schedules = {}
+    for table in soup.select("table"):
+        active = False
+        for cells in rows(table):
+            vals = text(cells)
+            if (
+                len(vals) == 9
+                and "segunda" in normalize(vals[3])
+                and "inicio" == normalize(vals[1])
+            ):
+                active = True
+                continue
+            if (
+                not active
+                or len(vals) != 9
+                or any(c.has_attr("rowspan") or c.has_attr("colspan") for c in cells)
+            ):
+                continue  # Unsupported merged timetable cells are not silently expanded.
+            if not re.fullmatch(r"\d{2}h\d{2}", vals[1]) or not re.fullmatch(
+                r"\d{2}h\d{2}", vals[2]
+            ):
+                continue
+            for weekday, cell in enumerate(vals[3:]):
+                match = re.fullmatch(r"([A-Z]{2}\d{2}[A-Z0-9]+)-([A-Z]+\d+)/([^\s]+)", cell)
+                if match:
+                    code, section, room = match.groups()
+                    schedules.setdefault(course_id(code, section, term), []).append(
+                        {
+                            "day": weekday,
+                            "start": vals[1].replace("h", ":"),
+                            "end": vals[2].replace("h", ":"),
+                            "units": 1,
+                            "room": room,
+                            "period_label": vals[0],
+                        }
+                    )
+    for subject, slots in schedules.items():
+        result.extend(
+            emit(
+                {
+                    "schedule": slots,
+                    "schedule_basis": "Regular enrollment timetable, Monday=0; cancellations and exceptional dates require separate evidence",
+                },
+                subject,
+                "course",
+                ref,
+            )
+        )
     return result
 
 
@@ -272,7 +337,156 @@ def history(html: str, ref: str):
                 )
             )
     # A later successful attempt takes precedence over an earlier failure, not a silent source preference.
+    result.extend(history_requirements(html, ref))
     return result, completed, pending
+
+
+def history_requirements(html, ref):
+    from campus.rules import CurriculumRequirement
+
+    result = []
+    for table in BeautifulSoup(html, "html.parser").select("table"):
+        workload_header = False
+        equivalence_header = False
+        elective_header = False
+        extension_header = False
+        for cells in rows(table):
+            if any(c.find("table") for c in cells):
+                continue
+            vals = text(cells)
+            norm = [normalize(v) for v in vals]
+            if norm == [
+                "optativa",
+                "nome do conjunto",
+                "periodo inicial",
+                "periodo final",
+                "chs",
+                "ch obrigatoria",
+                "ch cursada e aprovada",
+                "ch faltante",
+                "ch validada",
+            ]:
+                elective_header = True
+                continue
+            if norm == ["", "chext f", "cursada g", "faltante h", "situacao i"]:
+                extension_header = True
+                continue
+            if elective_header and len(vals) == 9 and vals[0].isdigit():
+                rule = {
+                    "type": "elective_group",
+                    "group": vals[0],
+                    "name": vals[1],
+                    "initial_period": numeric(vals[2]),
+                    "final_period": numeric(vals[3]),
+                    "required_hours": numeric(vals[5]),
+                    "approved_hours": numeric(vals[6]),
+                    "remaining_to_approve_hours": numeric(vals[7]),
+                    "validated_hours": numeric(vals[8]),
+                    "status": "CONFIRMED",
+                    "interpretation": "Group approval balance is distinct from curriculum validation; do not substitute it for the overall elective balance",
+                }
+                result.extend(
+                    emit(
+                        {"policy": rule},
+                        f"portal:requirement:elective:{vals[0]}",
+                        "requirement",
+                        ref,
+                        " | ".join(vals),
+                    )
+                )
+            if extension_header and len(vals) == 5 and norm[0].startswith("chext "):
+                rule = CurriculumRequirement(
+                    type="extension_hours",
+                    scope=vals[0],
+                    required_hours=numeric(vals[1]),
+                    attempted_hours=numeric(vals[2]),
+                    remaining_hours=numeric(vals[3]),
+                    interpretation="Explicit extension-hour balance; may overlap course workload, never add these hours to total curriculum workload automatically",
+                )
+                result.extend(
+                    emit(
+                        {"policy": {**rule.model_dump(), "source_status": vals[4]}},
+                        "portal:requirement:extension:" + normalize(vals[0]).replace(" ", "-"),
+                        "requirement",
+                        ref,
+                        " | ".join(vals),
+                    )
+                )
+            if len(vals) == 6 and norm[:2] == ["cht", "total do curso a"] and "faltante d" in norm:
+                workload_header = True
+                continue
+            if norm == ["disciplina equivalente", "", "disciplina obrigatoria"]:
+                equivalence_header = True
+                continue
+            if workload_header and len(vals) == 6 and norm[0].startswith("cht "):
+                scope = {
+                    "cht disciplinas obrigatorias": "mandatory",
+                    "cht disciplinas optativas": "elective",
+                    "cht geral do curso": "overall",
+                }.get(norm[0])
+                if not scope:
+                    continue
+                values = []
+                for v in vals[1:]:
+                    match = re.match(r"\d+(?:\.\d{3})*(?:,\d+)?", v)
+                    values.append(
+                        float(match[0].replace(".", "").replace(",", ".")) if match else None
+                    )
+                rule = CurriculumRequirement(
+                    type="workload",
+                    scope=scope,
+                    **dict(
+                        zip(
+                            (
+                                "required_hours",
+                                "attempted_hours",
+                                "validated_hours",
+                                "remaining_hours",
+                                "approved_hours",
+                            ),
+                            values,
+                            strict=True,
+                        )
+                    ),
+                    interpretation="Explicit history columns A/B/C/D/E. Approved hours are not necessarily validated toward the curriculum; use column C and the explicit remaining balance D.",
+                )
+                result.extend(
+                    emit(
+                        {"policy": rule.model_dump()},
+                        f"portal:requirement:workload:{scope}",
+                        "requirement",
+                        ref,
+                        " | ".join(vals),
+                    )
+                )
+            if (
+                equivalence_header
+                and len(vals) == 17
+                and vals[10] == "=>"
+                and CODE.fullmatch(vals[0])
+                and CODE.fullmatch(vals[12])
+            ):
+                result.extend(
+                    emit(
+                        {
+                            "rule": {
+                                "source_course": vals[0],
+                                "target_course": vals[12],
+                                "credited": normalize(vals[16]) == "sim"
+                                if normalize(vals[16]) in {"sim", "nao"}
+                                else None,
+                                "source_status": vals[9],
+                                "source_term": vals[8],
+                                "scope": "This student's recorded credit decision, not a universal automatic equivalence",
+                            }
+                        },
+                        f"portal:equivalence:{vals[0]}:{vals[12]}:{vals[8]}",
+                        "equivalence",
+                        ref,
+                        " | ".join(vals),
+                    )
+                )
+    return result
 
 
 def curriculum(html: str, ref: str, completed: set, pending: set, enrolled: set):
@@ -319,6 +533,19 @@ def curriculum(html: str, ref: str, completed: set, pending: set, enrolled: set)
                 "workload": numeric(workload[1]) if workload else None,
                 "prerequisites": sorted(set(prereqs)) if known else None,
                 "prerequisite_expression": expression,
+                "eligibility_constraint": {
+                    "type": "period_gate",
+                    "expression": expression,
+                    "operator": "UNKNOWN",
+                    "status": "UNRESOLVED",
+                }
+                if re.search(r"per[ií]odo", expression, re.I)
+                else None,
+                "equivalent_course_candidates": sorted(
+                    set(re.findall(r"\b[A-Z]{2,}\d{2,}[A-Z0-9]*\b", vals[15]))
+                )
+                if len(vals) > 15
+                else None,
                 "completed": complete,
                 "currently_enrolled": code in enrolled,
                 "completion_basis": "Approved/credited history"

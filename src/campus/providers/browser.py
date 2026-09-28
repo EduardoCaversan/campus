@@ -160,6 +160,15 @@ def auth(config: Config, provider: str, wait_seconds=180) -> dict:
                     break
         # Credentials remain in-process. Google authentication is always manual.
         if provider != "mail":
+            # Angular's login form can mount after DOMContentLoaded.
+            ready_until = time.monotonic() + 10
+            while time.monotonic() < ready_until:
+                if (
+                    authenticated(page, provider)
+                    or page.locator('input[type="password"]:visible').count()
+                ):
+                    break
+                page.wait_for_timeout(200)
             prefix = "UTFPR" if provider == "portal" else "MOODLE"
             username, password = os.getenv(prefix + "_USERNAME"), os.getenv(prefix + "_PASSWORD")
             if (

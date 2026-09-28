@@ -18,8 +18,8 @@ class Config(BaseModel):
     timezone: str = "America/Sao_Paulo"
     stale_hours: int = Field(default=24, ge=1)
     sync_interval_minutes: int = Field(default=15, ge=0)
-    portal_url: str = "https://sistemas2.utfpr.edu.br/portal-aluno"
-    portal_campus: str | None = None
+    portal_url: str = "https://sistemas2.utfpr.edu.br/dpls/sistema/aluno02/mpmenu.inicio"
+    portal_campus: str | None = "Cornélio Procópio"
     moodle_url: str = "https://moodle.utfpr.edu.br"
     mail_mode: str = "browser"
     mail_days: int = Field(default=30, ge=1, le=365)

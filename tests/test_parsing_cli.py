@@ -40,6 +40,24 @@ def test_mail_filter_uses_real_domain_not_suffix_attack():
     assert academic_mail("<external@example.org>", "UTFPR assignment", "")
 
 
+def test_assignment_title_uses_activity_header_not_widgets_or_instructions():
+    html = """<h2>Messages</h2><header id="page-header">
+    <div class="page-header-headings"><h1>Fictional lab activity</h1></div></header>
+    <section id="region-main"><div id="intro"><h1>Instructions</h1>
+    <h2>Delivery</h2></div></section>"""
+    facts = moodle_assignment(html, "https://moodle.example/mod/assign/view.php?id=5", "course:A")
+    assert next(f.value for f in facts if f.field == "name") == "Fictional lab activity"
+    legacy = '<h2>Messages</h2><section id="region-main"><h2>Legacy activity</h2></section>'
+    facts = moodle_assignment(legacy, "https://moodle.example/mod/assign/view.php?id=5", "course:A")
+    assert next(f.value for f in facts if f.field == "name") == "Legacy activity"
+
+
+def test_assignment_without_semantic_title_does_not_use_unrelated_heading():
+    html = '<h2>Messages</h2><section id="region-main"><div id="intro"><h2>Delivery</h2></div></section>'
+    facts = moodle_assignment(html, "https://moodle.example/mod/assign/view.php?id=5", "course:A")
+    assert not any(f.field == "name" for f in facts)
+
+
 def test_observed_moodle_portuguese_dates_and_submission():
     html = '<h2>Example</h2><div data-region="activity-dates">Aberto: quarta-feira, 16 set. 2026, 19:30 Vencimento: quinta-feira, 1 out. 2026, 21:20</div><div class="submissionstatustable"><table><tr><th>Status de envio</th><td>Enviado para avaliação</td></tr></table></div>'
     facts = moodle_assignment(html, "https://moodle.example/mod/assign/view.php?id=1", "course:1")

@@ -12,6 +12,21 @@ from campus.providers.parsing import academic_mail, fact, plain
 from campus.security import digest
 
 
+def decode_mail_body(headers: bytes, body: bytes) -> str:
+    message = email.message_from_bytes(
+        headers.rstrip(b"\r\n") + b"\r\n\r\n" + body, policy=policy.default
+    )
+    part = message.get_body(preferencelist=("plain", "html")) if message.is_multipart() else message
+    if part is None or part.get_content_type() not in {"text/plain", "text/html"}:
+        return ""
+    payload = part.get_payload(decode=True) or b""
+    try:
+        content = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+    except LookupError:
+        content = payload.decode("utf-8", errors="replace")
+    return plain(content) if part.get_content_type() == "text/html" else content[:100000]
+
+
 class StudentMailProvider:
     name = "mail"
 
@@ -61,7 +76,7 @@ class StudentMailProvider:
                 status, payload = client.uid(
                     "fetch",
                     uid,
-                    "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)] RFC822.SIZE)",
+                    "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID MIME-VERSION CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] RFC822.SIZE)",
                 )
                 chunks = [p for p in payload if isinstance(p, tuple)]
                 if status != "OK" or not chunks:
@@ -77,18 +92,7 @@ class StudentMailProvider:
                     if status == "OK"
                     else b""
                 )
-                msg = email.message_from_bytes(
-                    chunks[0][1] + b"\r\n" + body_bytes, policy=policy.default
-                )
-                text = body_bytes.decode("utf-8", errors="replace")
-                if msg.is_multipart():
-                    text = "\n".join(
-                        p.get_payload(decode=True).decode(
-                            p.get_content_charset() or "utf-8", errors="replace"
-                        )
-                        for p in msg.walk()
-                        if p.get_content_type() == "text/plain" and p.get_payload(decode=True)
-                    )
+                text = decode_mail_body(chunks[0][1], body_bytes)
                 identity = str(header.get("Message-ID") or digest(chunks[0][1].hex()))
                 target = "mail:" + digest(identity)[:24]
                 ref = "gmail-message:" + digest(identity)

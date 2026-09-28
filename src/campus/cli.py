@@ -196,7 +196,7 @@ def status(ctx: typer.Context):
     console.print(table)
     for health in data["last_sync"]:
         console.print(
-            f"{health['provider']}: {health['state']} · last complete sync: {health['last_success'] or 'UNKNOWN'}",
+            f"{health['provider']}: {health['state']} · last observed data: {health['last_data_sync'] or 'UNKNOWN'}",
             markup=False,
         )
     if not data["last_sync"]:
@@ -247,8 +247,19 @@ def grade_scenario(ctx: typer.Context, components: Path, target: float = 6, scal
 
 
 @app.command("attendance")
-def attendance_command(ctx: typer.Context, miss: float = typer.Option(0, min=0)):
+def attendance_command(
+    ctx: typer.Context, miss: float = typer.Option(0, min=0), day: str | None = None
+):
     campus = service(ctx)
+    if day:
+        from campus.engines import attendance_day_view
+
+        if miss:
+            raise CampusError(
+                "Use either --day for timetable-derived units or --miss for explicit units"
+            )
+        output(ctx, attendance_day_view(campus.store, day, campus.config.stale_hours))
+        return
     output(ctx, attendance_view(campus.store, campus.config.stale_hours, miss))
 
 
@@ -289,6 +300,14 @@ def evidence(ctx: typer.Context, identifier: str):
 @app.command()
 def mail(ctx: typer.Context):
     output(ctx, service(ctx).store.entities("mail"))
+
+
+@app.command("analyze-mail")
+def analyze_mail_command(ctx: typer.Context):
+    """Classify stored academic messages and link course candidates without model calls."""
+    from campus.mail_analysis import analyze_mail
+
+    output(ctx, analyze_mail(service(ctx).store))
 
 
 @app.command()
@@ -458,13 +477,88 @@ def artifact(
         result = generate_document(read_document(source), target)
     else:
         raise CampusError("Choose --source for a document or --repository for ZIP")
-    output(ctx, {"state": "COMPLETED", **result})
+    from campus.artifacts import artifact_manifest
+
+    manifest = artifact_manifest(
+        target.parent,
+        [result],
+        filename=target.name + ".manifest.json",
+        repository=str(repository.resolve()) if repository else None,
+    )
+    result["manifest"] = str(manifest)
+    output(ctx, {"state": "FAILED" if result["validation"] == "FAILED" else "COMPLETED", **result})
 
 
 @app.command("capability")
 def capability_command(ctx: typer.Context, capability: Capability):
     """Inspect capability policy; remote actions always remain dry-runs."""
     output(ctx, authorize(capability))
+
+
+@app.command("analyze-policies")
+def analyze_policies_command(ctx: typer.Context):
+    """Extract course-specific grading policies from locally synchronized teaching documents."""
+    from campus.policies import analyze_policies
+
+    output(ctx, analyze_policies(service(ctx).store))
+
+
+@app.command("grade-policy")
+def grade_policy_command(
+    ctx: typer.Context,
+    identifier: str = "",
+    component: str | None = None,
+    set_grade: list[str] = typer.Option([], "--set"),
+    recovery: float | None = typer.Option(None, "--recovery"),
+):
+    """Use evidence-backed policy; e.g. grade-policy CODE --set P1=7 --component P2."""
+    from campus.policies import policy_grade
+
+    overrides = {}
+    for item in set_grade:
+        key, sep, value = item.partition("=")
+        if not sep or not key or not value:
+            raise CampusError("Use --set COMPONENT=GRADE")
+        overrides[key.upper()] = value.replace(",", ".")
+    campus = service(ctx)
+    output(
+        ctx,
+        policy_grade(
+            campus.store,
+            identifier,
+            overrides,
+            component.upper() if component else None,
+            campus.config.stale_hours,
+            recovery_grade=recovery,
+        ),
+    )
+
+
+@app.command("requirements")
+def requirements_command(ctx: typer.Context):
+    """Explicit source-backed curriculum balances and individual equivalence decisions."""
+    campus = service(ctx)
+    output(
+        ctx,
+        {
+            "requirements": campus.store.entities("requirement"),
+            "equivalencies": campus.store.entities("equivalence"),
+        },
+    )
+
+
+@app.command("announcements")
+def announcements_command(ctx: typer.Context):
+    output(ctx, service(ctx).store.entities("announcement"))
+
+
+@app.command("events")
+def events_command(ctx: typer.Context):
+    from campus.events import analyze_events
+
+    campus = service(ctx)
+    analysis = analyze_events(campus.store)
+    output(ctx, {**analysis, "events": campus.store.entities("event")})
 
 
 @app.command()

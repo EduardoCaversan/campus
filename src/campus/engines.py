@@ -375,6 +375,11 @@ def attendance_view(store: Store, stale_hours=24, hypothetical=0):
 def grade_view(store: Store, stale_hours=24):
     result = []
     for entity in store.entities("course"):
+        if entity["fields"].get("grading_policy"):
+            from campus.policies import policy_grade
+
+            result.extend(policy_grade(store, entity["id"], stale_hours=stale_hours))
+            continue
         conflicts = set(entity["conflicts"]) & {"grading", "passing_grade", "grade_scale"}
         rule, target, scale = (
             single(entity, k) for k in ("grading", "passing_grade", "grade_scale")
@@ -400,3 +405,65 @@ def grade_view(store: Store, stale_hours=24):
             }
         )
     return result or [{"state": "UNKNOWN", "missing": ["synchronized grades"]}]
+
+
+def attendance_day_view(store: Store, day: str, stale_hours=24):
+    names = [
+        ("monday", "segunda"),
+        ("tuesday", "terca"),
+        ("wednesday", "quarta"),
+        ("thursday", "quinta"),
+        ("friday", "sexta"),
+        ("saturday", "sabado"),
+        ("sunday", "domingo"),
+    ]
+    key = normalize(day).removesuffix(" feira")
+    weekday = next((i for i, aliases in enumerate(names) if key in aliases), None)
+    if weekday is None:
+        raise CampusError("Specify a weekday in English or Portuguese")
+    results, unavailable = [], []
+    for course in store.entities("course"):
+        slots = single(course, "schedule")
+        if slots is None:
+            if single(course, "enrolled") is True:
+                unavailable.append(course["id"])
+            continue
+        selected = [s for s in slots if s.get("day") == weekday]
+        if not selected:
+            continue
+        units = sum(s.get("units", 0) for s in selected)
+        required = {"total_units", "held_units", "absences", "minimum_attendance", "schedule"}
+        if required & set(course["conflicts"]):
+            calculation = {"state": "CONFLICT"}
+        else:
+            try:
+                calculation = attendance(
+                    single(course, "total_units"),
+                    single(course, "absences"),
+                    single(course, "minimum_attendance"),
+                    single(course, "held_units"),
+                    units,
+                )
+            except CampusError as exc:
+                calculation = {"state": "UNKNOWN", "reason": str(exc)}
+        results.append(
+            {
+                "course": course["id"],
+                "name": single(course, "name"),
+                "schedule": selected,
+                **calculation,
+                "freshness": freshness(course["evidence"], stale_hours),
+                "evidence": course["evidence"],
+            }
+        )
+    return {
+        "state": "PARTIAL" if results else "UNKNOWN",
+        "weekday": names[weekday][0],
+        "courses": results,
+        "courses_without_verified_schedule": unavailable,
+        "safe_to_miss": None,
+        "assumptions": [
+            "Hypothesis: miss all listed periods on one regular occurrence of this weekday.",
+            "Regular timetable only; holidays, cancellations, date-specific attendance policies and unrecorded absences are not verified.",
+        ],
+    }

@@ -25,7 +25,9 @@ with browser(config, "portal") as ctx:
         "Matrizes Curriculares",
     ):
         blocked = set()
-        page.on("requestfailed", lambda r, failed=blocked: failed.add((r.method, urlsplit(r.url).path)))
+        page.on(
+            "requestfailed", lambda r, failed=blocked: failed.add((r.method, urlsplit(r.url).path))
+        )
         menu = BeautifulSoup(page.content(), "html.parser")
         card = next(
             n

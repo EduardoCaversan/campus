@@ -162,6 +162,7 @@ def package_repository(repository: Path, output: Path) -> dict:
         "path": str(output),
         "sha256": file_hash(output),
         "included": [n for n, _ in selected],
+        "file_hashes": {n: hashlib.sha256(data).hexdigest() for n, data in selected},
         "excluded": excluded,
         "validation": "CRC checked" if validate_artifact(output) else "FAILED",
         "warning": "Source-only package. Exclusions must be reviewed against assignment requirements; secret detection is defense in depth, not proof that arbitrary source text contains no secret.",
@@ -235,13 +236,19 @@ def validate_artifact(path: Path) -> bool:
         return False
 
 
-def artifact_manifest(directory: Path, artifacts: list[dict], **context) -> Path:
-    target = inside(directory, directory / "manifest.json")
+def artifact_manifest(
+    directory: Path, artifacts: list[dict], filename="manifest.json", **context
+) -> Path:
+    from campus.security import clean
+
+    target = inside(directory, directory / filename)
     if target.exists():
         raise CampusError("Manifest already exists")
     target.write_text(
         json.dumps(
-            {"created_at": now(), **context, "artifacts": artifacts}, ensure_ascii=False, indent=2
+            clean({"created_at": now(), **context, "artifacts": artifacts}),
+            ensure_ascii=False,
+            indent=2,
         ),
         encoding="utf-8",
     )

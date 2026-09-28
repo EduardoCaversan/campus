@@ -68,6 +68,10 @@ def test_zip_secret_exclusion_and_reproducibility(repository, tmp_path):
         assert archive.testzip() is None
     assert one.read_bytes() == two.read_bytes()
     assert hashlib.sha256(one.read_bytes()).hexdigest() == result["sha256"]
+    assert (
+        result["file_hashes"]["main.py"]
+        == hashlib.sha256((repository / "main.py").read_bytes()).hexdigest()
+    )
 
 
 @pytest.mark.parametrize("extension", ["md", "txt", "pdf", "docx"])
